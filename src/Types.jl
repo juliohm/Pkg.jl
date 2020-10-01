@@ -11,10 +11,11 @@ import Base.string
 using REPL.TerminalMenus
 
 using TOML
-import ...Pkg, ..UPDATED_REGISTRY_THIS_SESSION, ..DEFAULT_IO
+import ...Pkg, ..UPDATED_REGISTRY_THIS_SESSION, ..DEFAULT_IO, ..RegistryHandling
 import ...Pkg: GitTools, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server
 import Base.BinaryPlatforms: Platform
 import ..PlatformEngines: probe_platform_engines!, download, download_verify_unpack
+using ..Pkg.Versions
 
 import Base: SHA1
 using SHA
@@ -32,8 +33,6 @@ export UUID, SHA1, VersionRange, VersionSpec,
     projectfile_path, manifestfile_path,
     RegistrySpec
 export DepsValDict, CompatValDict, VersionsDict, DepsDict, CompatDict
-
-include("versions.jl")
 
 const DepsValDict   = Dict{VersionNumber,Dict{String,UUID}}
 const CompatValDict = Dict{VersionNumber,Dict{String,VersionSpec}}
@@ -264,6 +263,8 @@ mutable struct EnvCache
     # What these where at creation of the EnvCache
     original_project::Project
     original_manifest::Manifest
+    # Registris
+    registries::Vector{RegistryHandling.Registry}
     # registered package info:
     uuids::Dict{String,Vector{UUID}}
     paths::Dict{UUID,Vector{String}}
@@ -296,6 +297,8 @@ function EnvCache(env::Union{Nothing,String}=nothing)
     paths = Dict{UUID,Vector{String}}()
     names = Dict{UUID,Vector{String}}()
 
+    registries = RegistryHandling.collect_reachable_registries()
+
     env′ = EnvCache(env,
         project_file,
         manifest_file,
@@ -304,6 +307,7 @@ function EnvCache(env::Union{Nothing,String}=nothing)
         manifest,
         deepcopy(project),
         deepcopy(manifest),
+        registries,
         uuids,
         paths,
         names,)
@@ -331,9 +335,9 @@ Base.@kwdef mutable struct Context
 
     # The Julia Version to resolve with respect to
     julia_version::Union{VersionNumber,Nothing} = VERSION
+    parser::TOML.Parser = TOML.Parser()
     # test instrumenting
     status_io::Union{IO,Nothing} = nothing
-    parser::TOML.Parser = TOML.Parser()
 end
 
 project_uuid(ctx::Context) = ctx.env.pkg === nothing ? nothing : ctx.env.pkg.uuid
@@ -872,6 +876,7 @@ function clone_default_registries(ctx::Context; only_if_empty = true)
         end
         filter!(reg -> !(reg.uuid in installed_registries), registries)
         clone_or_cp_registries(ctx, registries)
+        copy!(ctx.env.registries, RegistryHandling.collect_reachable_registries())
     end
 end
 

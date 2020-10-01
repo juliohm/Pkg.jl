@@ -165,7 +165,7 @@ end
 ####################
 
 function load_versions(ctx, path::String; include_yanked=false)
-    toml = parse_toml(joinpath(path, "Versions.toml"); fakeit=true)
+    toml = parse_toml(ctx, joinpath(path, "Versions.toml"); fakeit=true)
     versions = Dict{VersionNumber, SHA1}(
         VersionNumber(ver) => SHA1(info["git-tree-sha1"]) for (ver, info) in toml
             if !get(info, "yanked", false) || include_yanked)
@@ -177,32 +177,6 @@ function load_versions(ctx, path::String; include_yanked=false)
         end
     end
     return versions
-end
-
-load_package_data(::Type{T}, path::String, version::VersionNumber) where {T} =
-    get(load_package_data(T, path, [version]), version, nothing)
-
-# TODO: This function is very expensive. Optimize it
-function load_package_data(::Type{T}, path::String, versions::Vector{VersionNumber}) where {T}
-    compressed = parse_toml(path, fakeit=true)
-    compressed = convert(Dict{String, Dict{String, Union{String, Vector{String}}}}, compressed)
-    uncompressed = Dict{VersionNumber, Dict{String,T}}()
-    vsorted = sort(versions)
-    for (vers, data) in compressed
-        vs = VersionSpec(vers)
-        for v in vsorted
-            v in vs || continue
-            uv = get!(() -> Dict{String, T}(), uncompressed, v)
-            for (key, value) in data
-                if haskey(uv, key)
-                    @warn "Overlapping ranges for $(key) in $(repr(path)) for version $v."
-                else
-                    uv[key] = T(value)
-                end
-            end
-        end
-    end
-    return uncompressed
 end
 
 function load_tree_hash(ctx::Context, pkg::PackageSpec)
@@ -420,8 +394,14 @@ end
 get_or_make!(d::Dict{K,V}, k::K) where {K,V} = get!(d, k) do; V() end
 
 function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve.Requires, fixed::Dict{UUID,Resolve.Fixed})
-    uuids = collect(union(keys(reqs), keys(fixed), map(fx->keys(fx.requires), values(fixed))...))
-    seen = UUID[]
+    uuids = Set{UUID}()
+    union!(uuids, keys(reqs))
+    union!(uuids, keys(fixed))
+    for fixed_uuids in map(fx->keys(fx.requires), values(fixed))
+        union!(uuids, fixed_uuids)
+    end
+
+    seen = Set{UUID}()
 
     all_versions = VersionsDict()
     all_deps     = DepsDict()
@@ -456,7 +436,7 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
                 all_deps_u_vr = get_or_make!(all_deps_u, v)
                 for (name, other_uuid) in proj.deps
                     all_deps_u_vr[name] = other_uuid
-                    other_uuid in uuids || push!(uuids, other_uuid)
+                    push!(uuids, other_uuid)
                 end
 
                 # TODO look at compat section for stdlibs?
@@ -465,33 +445,33 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
                     all_compat_u_vr[name] = VersionSpec()
                 end
             else
-                for path in registered_paths(ctx, uuid)
-                    version_info = load_versions(ctx, path; include_yanked=false)
-                    versions = sort!(collect(keys(version_info)))
-                    deps_data = load_package_data(UUID, joinpath(path, "Deps.toml"), versions)
-                    compat_data = load_package_data(VersionSpec, joinpath(path, "Compat.toml"), versions)
+                for reg in ctx.env.registries
+                    pkg = reg[uuid]
 
-                    union!(all_versions_u, versions)
-
-                    for (vr, dd) in deps_data
-                        all_deps_u_vr = get_or_make!(all_deps_u, vr)
-                        for (name,other_uuid) in dd
-                            # check conflicts??
-                            all_deps_u_vr[name] = other_uuid
-                            other_uuid in uuids || push!(uuids, other_uuid)
+                    for (v, dd) in pkg.version_info[]
+                        if Pkg.OFFLINE_MODE[]
+                            pkg_spec = PackageSpec(name=pkg.name, uuid=pkg.uuid, version=v, tree_hash=dd.git_tree_sha1)
+                            if !is_package_downloaded(ctx, pkg_spec)
+                                continue
+                            end
                         end
-                    end
-                    for (vr, cd) in compat_data
-                        all_compat_u_vr = get_or_make!(all_compat_u, vr)
-                        for (name,vs) in cd
+
+                        push!(all_versions_u, v)
+                        all_deps_u_v = get_or_make!(all_deps_u, v)
+                        all_compat_u_v = get_or_make!(all_compat_u, v)
+                        for (name, other_uuid) in dd.deps
                             # check conflicts??
-                            all_compat_u_vr[name] = vs
+                            all_deps_u_v[name] = other_uuid
+                            push!(uuids, other_uuid)
+                        end
+                        for (name,vs) in dd.compat
+                            # check conflicts??
+                            all_compat_u_v[name] = vs
                         end
                     end
                 end
             end
         end
-        find_registered!(ctx, uuids)
     end
 
     for uuid in uuids

@@ -94,6 +94,7 @@ end
 
 function develop(ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool=true,
                  preserve::PreserveLevel=PRESERVE_TIERED, platform::AbstractPlatform=HostPlatform(), kwargs...)
+    Types.clone_default_registries(ctx)
     require_not_empty(pkgs, :develop)
     foreach(pkg -> check_package_name(pkg.name, :develop), pkgs)
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
@@ -140,6 +141,7 @@ end
 
 function add(ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel=PRESERVE_TIERED,
              platform::AbstractPlatform=HostPlatform(), kwargs...)
+    Types.clone_default_registries(ctx)
     require_not_empty(pkgs, :add)
     foreach(pkg -> check_package_name(pkg.name, :add), pkgs)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
@@ -194,6 +196,7 @@ function add(ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel=PR
 end
 
 function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT, kwargs...)
+    Types.clone_default_registries(ctx)
     require_not_empty(pkgs, :rm)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
@@ -222,6 +225,7 @@ end
 function up(ctx::Context, pkgs::Vector{PackageSpec};
             level::UpgradeLevel=UPLEVEL_MAJOR, mode::PackageMode=PKGMODE_PROJECT,
             update_registry::Bool=true, kwargs...)
+    Types.clone_default_registries(ctx)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
 
@@ -257,6 +261,7 @@ function resolve(ctx::Context; kwargs...)
 end
 
 function pin(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
+    Types.clone_default_registries(ctx)
     require_not_empty(pkgs, :pin)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
@@ -287,6 +292,7 @@ end
 
 function free(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
     require_not_empty(pkgs, :free)
+    Types.clone_default_registries(ctx)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
@@ -315,6 +321,7 @@ function test(ctx::Context, pkgs::Vector{PackageSpec};
               julia_args::Union{Cmd, AbstractVector{<:AbstractString}}=``,
               test_args::Union{Cmd, AbstractVector{<:AbstractString}}=``,
               kwargs...)
+    Types.clone_default_registries(ctx)
     julia_args = Cmd(julia_args)
     test_args = Cmd(test_args)
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
