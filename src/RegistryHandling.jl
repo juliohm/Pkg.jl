@@ -20,6 +20,7 @@ mutable struct Pkg
     name::String
     uuid::UUID # could maybe remove this since it is a key in `RegistryInfo`
     repo::Union{String, Nothing}
+    subdir::Union{String, Nothing}
     # Lazily constructed in `update!`
     version_info::Union{Dict{VersionNumber, VersionInfo}, Nothing}
 end
@@ -34,6 +35,7 @@ struct RegistryInfo
     p::TOML.Parser
     uuid_cache::Dict{String, UUID}
     versionspec_cache::Dict{String, VersionSpec}
+    name_to_uuids::Dict{String, Vector{UUID}}
 end
 
 mutable struct Registry
@@ -53,6 +55,7 @@ function Base.show(io::IO, ::MIME"text/plain", r::Registry)
         println(io, "Registry: $(repr(r.name)) at $(repr(path)):")
         println(io, "  uuid: ", r.uuid)
         println(io, "  repo: ", r.repo)
+        println(io, "  subdir: ", r.repo)
         println(io, "  packages: ", length(r.pkgs))
     end
 end
@@ -67,8 +70,7 @@ function initialize_registry!(r::Registry)
         info::Dict{String, Any}
         pkgpath = info["path"]::String
         name = info["name"]::String
-        repo = get(info, "repo", nothing)::Union{Nothing, String}
-        pkg = Pkg(pkgpath, name, uuid, repo, nothing)
+        pkg = Pkg(pkgpath, name, uuid, nothing, nothing, nothing)
         pkgs[uuid] = pkg
     end
     r.info = RegistryInfo(
@@ -80,6 +82,7 @@ function initialize_registry!(r::Registry)
         p,
         Dict{String, UUID}(),
         Dict{String, VersionSpec}(),
+        Dict{String, Vector{UUID}}(),
     )
     return r
 end
@@ -146,13 +149,21 @@ function update!(r::Registry, u::UUID)
     pkg = r.pkgs[u]
     # Already uncompressed the info for this package, return early
     pkg.version_info === nothing || return r
+    path = joinpath(rpath, pkg.path)
+
+    path_package = joinpath(path, "Package.toml")
+    d_p = TOML.parsefile(r.p, path_package)
+    name = d_p["name"]
+    name != pkg.name && error("inconsistend name in Registry.toml and Package.toml for pkg at $(path)")
+    pkg.repo = get(d_p, "repo", nothing)::Union{Nothing, String}
+    pkg.subdir = get(d_p, "subdir", nothing)::Union{Nothing, String}
 
     # Read the versions from Versions.toml
-    path = joinpath(rpath, pkg.path)
     path_vers = joinpath(path, "Versions.toml")
     d_v = isfile(path_vers) ? TOML.parsefile(r.p, path_vers) : Dict{String, Any}()
     d_v = Dict{VersionNumber, Tuple{SHA1, Bool}}(VersionNumber(k) =>
         (SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v)
+
     versions_sorted = sort!(VersionNumber[x for x in keys(d_v)])
 
     # Uncompress and store
@@ -200,8 +211,23 @@ function collect_reachable_registries(; depots=Base.DEPOT_PATH)
     return registries
 end
 
+function uuids_from_name(r::Registry, name::String)
+    initialize_registry!(r)
+    create_name_uuid_mapping!(r)
+    return get(Vector{UUID}, r.info.name_to_uuids, name)
+end
 
-function inregistry(r::Registry, uuid::UUID)
+function create_name_uuid_mapping!(r::Registry)
+    initialize_registry!(r)
+    isempty(r.info.name_to_uuids) || return
+    for (uuid, pkg) in r.info.pkgs
+        uuids = get!(Vector{UUID}, r.info.name_to_uuids, pkg.name)
+        push!(uuids, pkg.uuid)
+    end
+    return
+end
+
+function Base.haskey(r::Registry, uuid::UUID)
     initialize_registry!(r)
     haskey(r.info.pkgs, uuid)
 end

@@ -21,10 +21,11 @@ import Base: SHA1
 using SHA
 
 export UUID, SHA1, VersionRange, VersionSpec,
-    PackageSpec, EnvCache, Context, PackageInfo, ProjectInfo, GitRepo, Context!, range_compressed_versionspec, err_rep,
+    PackageSpec, EnvCache, Context, PackageInfo, ProjectInfo, GitRepo, Context!, err_rep,
     PkgError, pkgerror, has_name, has_uuid, is_stdlib, stdlibs, write_env, write_env_usage, parse_toml, find_registered!,
-    project_resolve!, project_deps_resolve!, manifest_resolve!, registry_resolve!, stdlib_resolve!, handle_repos_develop!, handle_repos_add!, ensure_resolved,
-    manifest_info, registered_uuids, registered_paths, registered_uuid, registered_name,
+   project_resolve!, project_deps_resolve!, manifest_resolve!, registry_resolve!, stdlib_resolve!, handle_repos_develop!, handle_repos_add!, ensure_resolved,
+    registered_name,
+    manifest_info,
     read_project, read_package, read_manifest, pathrepr, registries,
     PackageMode, PKGMODE_MANIFEST, PKGMODE_PROJECT, PKGMODE_COMBINED,
     UpgradeLevel, UPLEVEL_FIXED, UPLEVEL_PATCH, UPLEVEL_MINOR, UPLEVEL_MAJOR,
@@ -265,10 +266,6 @@ mutable struct EnvCache
     original_manifest::Manifest
     # Registris
     registries::Vector{RegistryHandling.Registry}
-    # registered package info:
-    uuids::Dict{String,Vector{UUID}}
-    paths::Dict{UUID,Vector{String}}
-    names::Dict{UUID,Vector{String}}
 end
 
 function EnvCache(env::Union{Nothing,String}=nothing)
@@ -293,9 +290,6 @@ function EnvCache(env::Union{Nothing,String}=nothing)
         abspath(manifest_file) : manifestfile_path(dir)::String
     write_env_usage(manifest_file, "manifest_usage.toml")
     manifest = read_manifest(manifest_file)
-    uuids = Dict{String,Vector{UUID}}()
-    paths = Dict{UUID,Vector{String}}()
-    names = Dict{UUID,Vector{String}}()
 
     registries = RegistryHandling.collect_reachable_registries()
 
@@ -308,9 +302,7 @@ function EnvCache(env::Union{Nothing,String}=nothing)
         deepcopy(project),
         deepcopy(manifest),
         registries,
-        uuids,
-        paths,
-        names,)
+        )
 
     # Save initial environment for undo/redo functionality
     if !Pkg.API.saved_initial_snapshot[]
@@ -546,17 +538,18 @@ function set_repo_source_from_registry!(ctx, pkg)
     end
     ensure_resolved(ctx, [pkg]; registry=true)
     # We might have been given a name / uuid combo that does not have an entry in the registry
-    repo_info = registered_info(ctx, pkg.uuid, "repo", String)
-    if isempty(repo_info)
-        pkgerror("Repository for package with UUID `$(pkg.uuid)` could not be found in a registry.")
+    for reg in ctx.env.registries
+        regpkg = get(reg, pkg.uuid, nothing)
+        regpkg === nothing && continue
+        url = regpkg.repo
+        url === nothing && continue
+        pkg.repo.source = url
+        if regpkg.subdir !== nothing
+            pkg.repo.subdir = regpkg.subdir
+        end
+        return
     end
-    _, repo_source = repo_info[1] # Just take the first repo we found
-    pkg.repo.source = repo_source
-    subdir_info = registered_info(ctx, pkg.uuid, "subdir", String)
-    _, subdir = subdir_info[1] # Just take the first subdir we found
-    if subdir !== nothing
-        pkg.repo.subdir = subdir
-    end
+    pkgerror("Repository for package with UUID `$(pkg.uuid)` could not be found in a registry.")
 end
 
 
@@ -769,7 +762,6 @@ function registry_resolve!(ctx::Context, pkgs::AbstractVector{PackageSpec})
     # collect all names and uuids since we're looking anyway
     names = [pkg.name::String for pkg in pkgs if has_name(pkg)]
     uuids = [pkg.uuid::UUID for pkg in pkgs if has_uuid(pkg)]
-    find_registered!(ctx, names, uuids)
     for pkg in pkgs
         @assert has_name(pkg) || has_uuid(pkg)
         if has_name(pkg) && !has_uuid(pkg)
@@ -1204,90 +1196,19 @@ function update_registries(ctx::Context, regs::Vector{RegistrySpec} = collect_re
     return
 end
 
-find_registered!(ctx::Context, uuids::Vector{UUID}) =
-    find_registered!(ctx, String[], uuids)
-# Lookup package names & uuids in a single pass through registries
-function find_registered!(ctx::Context,
-    names::Vector{String},
-    uuids::Vector{UUID}=UUID[]
-)::Nothing
-    # only look if there's something new to see
-    names = filter(name -> !haskey(ctx.env.uuids, name), names)
-    uuids = filter(uuid -> !haskey(ctx.env.paths, uuid), uuids)
-    isempty(names) && isempty(uuids) && return
-
-    # since we're looking anyway, look for everything
-    save(name::String) =
-        name in names || haskey(ctx.env.uuids, name) || push!(names, name)
-    save(uuid::UUID) =
-        uuid in uuids || haskey(ctx.env.paths, uuid) || push!(uuids, uuid)
-
-    # lookup any dependency in the project file
-    for (name, uuid) in ctx.env.project.deps
-        save(name); save(uuid)
+function registered_uuids(ctx::Context, name::String)
+    uuids = UUID[]
+    for reg in ctx.env.registries
+        append!(uuids, RegistryHandling.uuids_from_name(reg, name))
     end
-    # lookup anything mentioned in the manifest file
-    for (uuid, entry) in ctx.env.manifest
-        save(uuid)
-        save(entry.name)
-        for (uuid, name) in entry.deps
-            save(uuid)
-            save(name)
-        end
-    end
-    # if there's still nothing to look for, return early
-    isempty(names) && isempty(uuids) && return
-    # initialize env entries for names and uuids
-    for name in names; ctx.env.uuids[name] = UUID[]; end
-    for uuid in uuids; ctx.env.paths[uuid] = String[]; end
-    for uuid in uuids; ctx.env.names[uuid] = String[]; end
-
-    # note: empty vectors will be left for names & uuids that aren't found
-    clone_default_registries(ctx)
-    for registry in collect_registries()
-        reg_abspath = abspath(registry.path)
-        data = read_registry(joinpath(registry.path, "Registry.toml"))
-        for (_uuid, pkgdata) in data["packages"]
-            _uuid, pkgdata = _uuid::String, pkgdata::Dict{String,Any}
-            name = pkgdata["name"]::String
-            uuid = UUID(_uuid)
-            push!(get!(Vector{UUID}, ctx.env.uuids, name), uuid)
-            path = joinpath(reg_abspath, pkgdata["path"])
-            push!(get!(Vector{String}, ctx.env.names, uuid), name)
-            push!(get!(Vector{String}, ctx.env.paths, uuid), path)
-        end
-    end
-
-    uniqueall!(d) = for (k, v) in d unique!(v) end
-    uniqueall!(ctx.env.uuids)
-    uniqueall!(ctx.env.paths)
-    uniqueall!(ctx.env.names)
-    return nothing
-end
-
-# Get registered uuids associated with a package name
-function registered_uuids(ctx::Context, name::String)::Vector{UUID}
-    find_registered!(ctx, [name], UUID[])
-    return unique(ctx.env.uuids[name])
-end
-
-# Get registered paths associated with a package uuid
-function registered_paths(ctx::Context, uuid::UUID)::Vector{String}
-    find_registered!(ctx, String[], [uuid])
-    return ctx.env.paths[uuid]
-end
-
-#Get registered names associated with a package uuid
-function registered_names(ctx::Context, uuid::UUID)::Vector{String}
-    find_registered!(ctx, String[], [uuid])
-    return ctx.env.names[uuid]
+    return uuids
 end
 
 # Determine a single UUID for a given name, prompting if needed
 function registered_uuid(ctx::Context, name::String)::Union{Nothing,UUID}
     uuids = registered_uuids(ctx, name)
     length(uuids) == 0 && return nothing
-    length(uuids) == 1 && return uuids[1]
+    length(uuids) == 1 && return first(uuids)
     choices::Vector{String} = []
     choices_cache::Vector{Tuple{UUID,String}} = []
     for uuid in uuids
@@ -1319,30 +1240,17 @@ end
 
 # Determine current name for a given package UUID
 function registered_name(ctx::Context, uuid::UUID)::Union{Nothing,String}
-    names = registered_names(ctx, uuid)
-    length(names) == 0 && return nothing
-    length(names) == 1 && return names[1]
-    values = registered_info(ctx, uuid, "name", String)
     name = nothing
-    for value in values
-        name  === nothing && (name = value[2])
-        name != value[2] && pkgerror("package `$uuid` has multiple registered name values: $name, $(value[2])")
+    for reg in ctx.env.registries
+        regpkg = get(reg, uuid, nothing)
+        regpkg === nothing && continue
+        name′ = regpkg.name
+        if name !== nothing
+            name′ == name || pkgerror("package `$uuid` has multiple registered name values: $name, $name′")
+        end
+        name = name′
     end
     return name
-end
-
-# Return most current package info for a registered UUID
-function registered_info(ctx::Context, uuid::UUID, key::String, ::Type{T}) where {T}
-    haskey(ctx.env.paths, uuid) || find_registered!(ctx, [uuid])
-    paths = ctx.env.paths[uuid]
-    isempty(paths) && pkgerror("`$uuid` is not registered")
-    values = Tuple{String, Union{T, Nothing}}[]
-    for path in paths
-        info = parse_toml(joinpath(path, "Package.toml"))
-        value = get(info, key, nothing)::Union{T, Nothing}
-        push!(values, (path, value))
-    end
-    return values
 end
 
 # Find package by UUID in the manifest file

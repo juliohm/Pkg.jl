@@ -333,7 +333,6 @@ function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
     Resolve.simplify_graph!(graph)
     vers = Resolve.resolve(graph)
 
-    find_registered!(ctx, collect(keys(vers)))
     # update vector of package versions
     for (uuid, ver) in vers
         idx = findfirst(p -> p.uuid == uuid, pkgs)
@@ -468,18 +467,18 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
 end
 
 function load_urls(ctx::Context, pkgs::Vector{PackageSpec})
-    urls = Dict{UUID,Vector{String}}()
+    urls = Dict{UUID,Set{String}}()
     for pkg in pkgs
         uuid = pkg.uuid
-        ver = pkg.version::VersionNumber
-        urls[uuid] = String[]
-        for path in registered_paths(ctx, uuid)
-            info = parse_toml(joinpath(path, "Package.toml"))
-            repo = info["repo"]
-            repo in urls[uuid] || push!(urls[uuid], repo)
+        urls[uuid] = Set{String}()
+        for reg in ctx.env.registries
+            reg_pkg = get(reg, pkg.uuid, uuid)
+            reg_pkg === nothing && continue
+            repo = reg_pkg.repo
+            repo === nothing && continue
+            push!(urls[uuid], repo)
         end
     end
-    foreach(sort!, values(urls))
     return urls
 end
 
@@ -657,7 +656,7 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec}; readonly=true)
 end
 
 function download_source(ctx::Context, pkgs::Vector{PackageSpec},
-                        urls::Dict{UUID, Vector{String}}; readonly=true)
+                        urls::Dict{UUID, Set{String}}; readonly=true)
     probe_platform_engines!()
     new_pkgs = PackageSpec[]
 
@@ -1039,10 +1038,10 @@ end
 
 function check_registered(ctx::Context, pkgs::Vector{PackageSpec})
     pkgs = filter(tracking_registered_version, pkgs)
-    find_registered!(ctx, UUID[pkg.uuid for pkg in pkgs])
     for pkg in pkgs
-        isempty(registered_paths(ctx, pkg.uuid)) || continue
-        pkgerror("expected package $(err_rep(pkg)) to be registered")
+        if !any(r->haskey(r, pkg.uuid), ctx.env.registries)
+            pkgerror("expected package $(err_rep(pkg)) to be registered")
+        end
     end
 end
 
@@ -1233,7 +1232,7 @@ function update_package_pin!(ctx::Context, pkg::PackageSpec, entry::PackageEntry
         if entry.repo.source !== nothing || entry.path !== nothing
             # A pin in this case includes an implicit `free` to switch to tracking registered versions
             # First, make sure the package is registered so we have something to free to
-            if isempty(registered_paths(ctx, pkg.uuid))
+            if !is_tracking_registry(pkg)
                 pkgerror("unable to pin unregistered package $(err_rep(pkg)) to an arbritrary version")
             end
         end
@@ -1270,7 +1269,7 @@ function update_package_free!(ctx::Context, pkg::PackageSpec, entry::PackageEntr
     end
     if entry.path !== nothing || entry.repo.source !== nothing
         # make sure the package is registered so we have something to free to
-        if isempty(registered_paths(ctx, pkg.uuid))
+        if !is_tracking_registry(pkg)
             pkgerror("unable to free unregistered package $(err_rep(pkg))")
         end
         return # -> name, uuid

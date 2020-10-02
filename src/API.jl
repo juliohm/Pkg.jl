@@ -311,7 +311,6 @@ function free(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
     manifest_resolve!(ctx, pkgs)
     ensure_resolved(ctx, pkgs)
 
-    find_registered!(ctx, UUID[pkg.uuid for pkg in pkgs])
     Operations.free(ctx, pkgs)
     return
 end
