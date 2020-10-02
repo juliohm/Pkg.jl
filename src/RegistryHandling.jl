@@ -28,6 +28,7 @@ end
 struct RegistryInfo
     name::String
     uuid::UUID
+    url::Union{String, Nothing}
     repo::Union{String, Nothing}
     description::Union{String, Nothing}
     pkgs::Dict{UUID, Pkg}
@@ -76,8 +77,9 @@ function initialize_registry!(r::Registry)
     r.info = RegistryInfo(
         d["name"]::String,
         UUID(d["uuid"]::String),
-        get(d, "repo", nothing)::Union{Nothing, String},
-        get(d, "description", nothing)::Union{Nothing, String},
+        get(d, "url", nothing)::Union{String, Nothing},
+        get(d, "repo", nothing)::Union{String, Nothing},
+        get(d, "description", nothing)::Union{String, Nothing},
         pkgs,
         p,
         Dict{String, UUID}(),
