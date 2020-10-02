@@ -1027,18 +1027,8 @@ function clone_or_cp_registries(ctx::Context, regs::Vector{RegistrySpec}, depot:
     return nothing
 end
 
-# path -> (mtime, TOML Dict)
-const REGISTRY_CACHE = Dict{String, Tuple{Float64, Dict{String, Any}}}()
-
 function read_registry(reg_file; cache=true)
-    t = mtime(reg_file)
-    if haskey(REGISTRY_CACHE, reg_file)
-        prev_t, registry = REGISTRY_CACHE[reg_file]
-        t == prev_t && return registry
-    end
-    registry = TOML.parsefile(reg_file)
-    cache && (REGISTRY_CACHE[reg_file] = (t, registry))
-    return registry
+    return TOML.parsefile(reg_file)
 end
 
 # verify that the registry looks like a registry
