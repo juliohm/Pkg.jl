@@ -164,27 +164,12 @@ end
 # Registry Loading #
 ####################
 
-function load_versions(ctx, path::String; include_yanked=false)
-    toml = parse_toml(ctx, joinpath(path, "Versions.toml"); fakeit=true)
-    versions = Dict{VersionNumber, SHA1}(
-        VersionNumber(ver) => SHA1(info["git-tree-sha1"]) for (ver, info) in toml
-            if !get(info, "yanked", false) || include_yanked)
-    if Pkg.OFFLINE_MODE[] # filter out all versions that are not already downloaded
-        pkg = parse_toml(joinpath(path, "Package.toml"))
-        filter!(versions) do (v, sha)
-            pkg_spec = PackageSpec(name=pkg["name"]::String, uuid=UUID(pkg["uuid"]::String), version=v, tree_hash=sha)
-            return is_package_downloaded(ctx, pkg_spec)
-        end
-    end
-    return versions
-end
-
 function load_tree_hash(ctx::Context, pkg::PackageSpec)
     hash = nothing
     for reg in ctx.env.registries
         reg_pkg = get(reg, pkg.uuid, nothing)
         reg_pkg === nothing && continue
-        version_info = get(reg_pkg.version_info[], pkg.version, nothing)
+        version_info = get(reg_pkg.version_info, pkg.version, nothing)
         version_info === nothing && continue
         hash′ = version_info.git_tree_sha1
         if hash !== nothing
@@ -439,7 +424,7 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
                 for reg in ctx.env.registries
                     pkg = reg[uuid]
 
-                    for (v, dd) in pkg.version_info[]
+                    for (v, dd) in pkg.version_info
                         # Filter yanked and if we are in offline mode also downloaded packages
                         dd.yanked && continue
                         if Pkg.OFFLINE_MODE[]

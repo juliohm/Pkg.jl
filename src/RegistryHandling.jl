@@ -15,13 +15,13 @@ struct VersionInfo
     yanked::Bool
 end
 
-struct Pkg
+mutable struct Pkg
     path::String
     name::String
     uuid::UUID # could maybe remove this since it is a key in `RegistryInfo`
     repo::Union{String, Nothing}
     # Lazily constructed in `update!`
-    version_info::RefValue{Dict{VersionNumber, VersionInfo}}
+    version_info::Union{Dict{VersionNumber, VersionInfo}, Nothing}
 end
 
 struct RegistryInfo
@@ -36,20 +36,20 @@ struct RegistryInfo
     versionspec_cache::Dict{String, VersionSpec}
 end
 
-struct Registry
+mutable struct Registry
     path::String
     # Lazyily constructed
-    info::RefValue{RegistryInfo}
+    info::Union{RegistryInfo, Nothing}
 end
 
-Registry(path::AbstractString) = Registry(path, RefValue{RegistryInfo}())
+Registry(path::AbstractString) = Registry(path, nothing)
 
 function Base.show(io::IO, ::MIME"text/plain", r::Registry)
-    if !isassigned(r.info)
+    if r.info === nothing
         println(io, "Registry: at $(repr(r.path)) [uninitialized]")
     else
         path = r.path
-        r = r.info[]
+        r = r.info
         println(io, "Registry: $(repr(r.name)) at $(repr(path)):")
         println(io, "  uuid: ", r.uuid)
         println(io, "  repo: ", r.repo)
@@ -58,7 +58,7 @@ function Base.show(io::IO, ::MIME"text/plain", r::Registry)
 end
 
 function initialize_registry!(r::Registry)
-    isassigned(r.info) && return
+    r.info === nothing || return r
     p = TOML.Parser()
     d = TOML.parsefile(p, joinpath(r.path, "Registry.toml"))
     pkgs = Dict{UUID, Pkg}()
@@ -68,10 +68,10 @@ function initialize_registry!(r::Registry)
         pkgpath = info["path"]::String
         name = info["name"]::String
         repo = get(info, "repo", nothing)::Union{Nothing, String}
-        pkg = Pkg(pkgpath, name, uuid, repo, RefValue{Dict{VersionNumber, VersionInfo}}())
+        pkg = Pkg(pkgpath, name, uuid, repo, nothing)
         pkgs[uuid] = pkg
     end
-    info = RegistryInfo(
+    r.info = RegistryInfo(
         d["name"]::String,
         UUID(d["uuid"]::String),
         get(d, "repo", nothing)::Union{Nothing, String},
@@ -81,7 +81,6 @@ function initialize_registry!(r::Registry)
         Dict{String, UUID}(),
         Dict{String, VersionSpec}(),
     )
-    r.info[] = info
     return r
 end
 
@@ -141,12 +140,12 @@ function uncompress(::Type{T}, path::String, vsorted::AbstractVector{VersionNumb
 end
 
 function update!(r::Registry, u::UUID)
-    isassigned(r.info) || initialize_registry!(r)
+    initialize_registry!(r)
     rpath = r.path
-    r = r.info[]
+    r = r.info::RegistryInfo
     pkg = r.pkgs[u]
     # Already uncompressed the info for this package, return early
-    isassigned(pkg.version_info) && return r
+    pkg.version_info === nothing || return r
 
     # Read the versions from Versions.toml
     path = joinpath(rpath, pkg.path)
@@ -178,7 +177,7 @@ function update!(r::Registry, u::UUID)
         deps_data_v = get(Dict{String, UUID}, deps_data, v)
         version_data[v] = VersionInfo(hash, compat_data_v, deps_data_v, yanked)
     end
-    pkg.version_info[] = version_data
+    pkg.version_info = version_data
     return
 end
 
@@ -203,18 +202,18 @@ end
 
 
 function inregistry(r::Registry, uuid::UUID)
-    isassigned(r.info) || initialize_registry!(r)
-    haskey(r.info[].pkgs, uuid)
+    initialize_registry!(r)
+    haskey(r.info.pkgs, uuid)
 end
 
 function Base.getindex(r::Registry, uuid::UUID)
     update!(r, uuid)
-    r.info[].pkgs[uuid]
+    r.info.pkgs[uuid]
 end
 
 function Base.get(r::Registry, uuid::UUID, default)
     update!(r, uuid)
-    get(r.info[].pkgs, uuid, default)
+    get(r.info.pkgs, uuid, default)
 end
 
 
