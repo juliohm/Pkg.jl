@@ -231,18 +231,22 @@ end
 
 function Base.haskey(r::Registry, uuid::UUID)
     initialize_registry!(r)
-    haskey(r.info.pkgs, uuid)
+    return haskey(r.info.pkgs, uuid)
+end
+
+function Base.keys(r::Registry)
+    initialize_registry!(r)
+    return keys(r.info.pkgs)
 end
 
 function Base.getindex(r::Registry, uuid::UUID)
     update!(r, uuid)
-    r.info.pkgs[uuid]
+    return r.info.pkgs[uuid]
 end
 
 function Base.get(r::Registry, uuid::UUID, default)
     update!(r, uuid)
-    get(r.info.pkgs, uuid, default)
+    return get(r.info.pkgs, uuid, default)
 end
-
 
 end

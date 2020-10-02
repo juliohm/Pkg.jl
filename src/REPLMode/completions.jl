@@ -51,30 +51,39 @@ end
 
 function complete_remote_package(partial)
     cmp = String[]
+    isempty(partial) && return cmp
     julia_version = VERSION
     ctx = Context()
-    for reg in Types.collect_registries()
-        data = Types.read_registry(joinpath(reg.path, "Registry.toml"))
-        for (uuid, pkginfo) in data["packages"]
-            name = pkginfo["name"]
-            if startswith(name, partial)
-                path = pkginfo["path"]
-                version_info = Operations.load_versions(ctx, path; include_yanked=false)
-                versions = sort!(collect(keys(version_info)))
-                compat_data = Operations.load_package_data(
-                    VersionSpec, joinpath(reg.path, path, "Compat.toml"), versions)
-                supported_julia_versions = VersionSpec()
-                found_julia_compat = false
-                for (ver_range, compats) in compat_data
-                    for (compat, v) in compats
-                        if compat == "julia"
-                            found_julia_compat = true
-                            union!(supported_julia_versions, VersionSpec(v))
+    for reg in ctx.env.registries
+        # TODO: This is kinda ugnly
+        Pkg.RegistryHandling.initialize_registry!(reg)
+        for (uuid, pkg) in reg.info.pkgs
+            if startswith(pkg.name, partial)
+                # TODO: In this case we don't actually need to do the uncompressing
+                # since we just want to see if julia is inside one of the ranges
+                # Tweak the API to allow for that?
+                Pkg.RegistryHandling.update!(reg, uuid)
+                for (v, v_data) in pkg.version_info
+                    # TODO: consolidate this with the version filtering in `Operations.deps_graph`
+                    v_data.yanked && continue
+                    if Pkg.OFFLINE_MODE[]
+                        pkg_spec = PackageSpec(name=pkg.name, uuid=pkg.uuid, tree_hash=v_data.git_tree_sha1)
+                        if !Operations.is_package_downloaded(ctx, pkg_spec)
+                            continue
                         end
                     end
-                end
-                if VERSION in supported_julia_versions || !found_julia_compat
-                    push!(cmp, name)
+                    supported_julia_versions = VersionSpec()
+                    found_julia_compat = false
+                    for (pkg, vspec) in v_data.compat
+                        if pkg == "julia"
+                            found_julia_compat = true
+                            union!(supported_julia_versions, vspec)
+                        end
+                    end
+                    if VERSION in supported_julia_versions || !found_julia_compat
+                        push!(cmp, pkg.name)
+                        break
+                    end
                 end
             end
         end
@@ -107,9 +116,10 @@ function complete_add_dev(options, partial, i1, i2)
     if occursin(Base.Filesystem.path_separator_re, partial)
         return comps, idx, !isempty(comps)
     end
-    comps = vcat(comps, complete_remote_package(partial))
-    comps = vcat(comps, filter(x->startswith(x,partial) && !(x in comps),
-                               collect(values(Types.stdlibs()))))
+    comps = vcat(comps, sort(complete_remote_package(partial)))
+    if !isempty(partial)
+        append!(comps, filter!(startswith(partial), collect(values(Types.stdlibs()))))
+    end
     return comps, idx, !isempty(comps)
 end
 
