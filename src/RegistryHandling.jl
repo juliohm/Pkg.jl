@@ -12,6 +12,7 @@ struct VersionInfo
     #compat::Dict{UUID, VersionSpec}
     compat::Dict{String, VersionSpec}
     deps::Dict{String, UUID}
+    yanked::Bool
 end
 
 struct Pkg
@@ -151,18 +152,19 @@ function update!(r::Registry, u::UUID)
     path = joinpath(rpath, pkg.path)
     path_vers = joinpath(path, "Versions.toml")
     d_v = isfile(path_vers) ? TOML.parsefile(r.p, path_vers) : Dict{String, Any}()
-    d_v = Dict{VersionNumber, SHA1}(VersionNumber(k) => SHA1(v["git-tree-sha1"]::String) for (k, v) in d_v)
+    d_v = Dict{VersionNumber, Tuple{SHA1, Bool}}(VersionNumber(k) =>
+        (SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v)
     versions_sorted = sort!(VersionNumber[x for x in keys(d_v)])
 
     # Uncompress and store
     deps_data   = uncompress(UUID,        joinpath(path, "Deps.toml"),   versions_sorted, r.uuid_cache,        r.p)
     compat_data = uncompress(VersionSpec, joinpath(path, "Compat.toml"), versions_sorted, r.versionspec_cache, r.p)
     version_data = Dict{VersionNumber, VersionInfo}()
-    for (v, hash) in d_v
+    for (v, (hash, yanked)) in d_v
         # TODO: Use when the collapsing of the two fields in VersionInfo is done
         #=
         d = Dict{UUID, VersionSpec}()
-        deps_data_v = get(deps_data, v,  nothing) 
+        deps_data_v = get(deps_data, v,  nothing)
         compat_data_v = get(compat_data, v, nothing)
         compat_data_v === nothing && continue
         for (name, compat) in compat_data_v
@@ -174,7 +176,7 @@ function update!(r::Registry, u::UUID)
         =#
         compat_data_v = get(Dict{String, VersionSpec}, compat_data, v)
         deps_data_v = get(Dict{String, UUID}, deps_data, v)
-        version_data[v] = VersionInfo(hash, compat_data_v, deps_data_v)
+        version_data[v] = VersionInfo(hash, compat_data_v, deps_data_v, yanked)
     end
     pkg.version_info[] = version_data
     return
@@ -208,6 +210,11 @@ end
 function Base.getindex(r::Registry, uuid::UUID)
     update!(r, uuid)
     r.info[].pkgs[uuid]
+end
+
+function Base.get(r::Registry, uuid::UUID, default)
+    update!(r, uuid)
+    get(r.info[].pkgs, uuid, default)
 end
 
 

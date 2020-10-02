@@ -180,15 +180,19 @@ function load_versions(ctx, path::String; include_yanked=false)
 end
 
 function load_tree_hash(ctx::Context, pkg::PackageSpec)
-    hashes = SHA1[]
-    for path in registered_paths(ctx, pkg.uuid)
-        vers = load_versions(ctx, path; include_yanked=true)
-        hash = get(vers, pkg.version, nothing)
-        hash !== nothing && push!(hashes, hash)
+    hash = nothing
+    for reg in ctx.env.registries
+        reg_pkg = get(reg, pkg.uuid, nothing)
+        reg_pkg === nothing && continue
+        version_info = get(reg_pkg.version_info[], pkg.version, nothing)
+        version_info === nothing && continue
+        hash′ = version_info.git_tree_sha1
+        if hash !== nothing
+            hash == hash′ || pkgerror("hash mismatch in registries for $(pkg.name) at version $(pkg.version)")
+        end
+        hash = hash′
     end
-    isempty(hashes) && return nothing
-    length(unique!(hashes)) == 1 || pkgerror("hash mismatch")
-    return hashes[1]
+    return hash
 end
 
 function load_tree_hashes!(ctx::Context, pkgs::Vector{PackageSpec})
@@ -201,16 +205,6 @@ end
 #######################################
 # Dependency gathering and resolution #
 #######################################
-function set_maximum_version_registry!(ctx::Context, pkg::PackageSpec)
-    pkgversions = Set{VersionNumber}()
-    for path in registered_paths(ctx, pkg.uuid)
-        pathvers = keys(load_versions(ctx, path; include_yanked=false))
-        union!(pkgversions, pathvers)
-    end
-    max_version = maximum(pkgversions; init=VersionNumber(0))
-    pkg.version = VersionNumber(max_version.major, max_version.minor, max_version.patch, max_version.prerelease, ("",))
-end
-
 function collect_project!(ctx::Context, pkg::PackageSpec, path::String,
                           deps_map::Dict{UUID,Vector{PackageSpec}})
     deps_map[pkg.uuid] = PackageSpec[]
@@ -230,8 +224,7 @@ function collect_project!(ctx::Context, pkg::PackageSpec, path::String,
     if project.version !== nothing
         pkg.version = project.version
     else
-        # @warn "project file for $(pkg.name) is missing a `version` entry"
-        set_maximum_version_registry!(ctx, pkg)
+        pkgerror("project file for $(pkg.name) is missing a `version` entry")
     end
     return
 end
@@ -368,8 +361,6 @@ function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
             push!(pkgs, PackageSpec(;name=name, uuid=uuid, version=ver))
         end
     end
-    # TODO: We already parse the Versions.toml file for each package in deps_graph but this
-    # function ends up reparsing it. Consider caching the earlier result.
     load_tree_hashes!(ctx, pkgs)
     final_deps_map = Dict{UUID, Dict{String, UUID}}()
     for pkg in pkgs
@@ -449,6 +440,8 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
                     pkg = reg[uuid]
 
                     for (v, dd) in pkg.version_info[]
+                        # Filter yanked and if we are in offline mode also downloaded packages
+                        dd.yanked && continue
                         if Pkg.OFFLINE_MODE[]
                             pkg_spec = PackageSpec(name=pkg.name, uuid=pkg.uuid, version=v, tree_hash=dd.git_tree_sha1)
                             if !is_package_downloaded(ctx, pkg_spec)
