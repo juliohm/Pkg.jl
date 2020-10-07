@@ -124,6 +124,7 @@ struct RegistryInfo
     repo::Union{String, Nothing}
     description::Union{String, Nothing}
     pkgs::Dict{UUID, Pkg}
+    tree_info::Union{Base.SHA1, Nothing}
     # various caches
     p::TOML.Parser
     uuid_cache::Dict{String, UUID}
@@ -135,7 +136,7 @@ end
     path::String
     @lazy info::RegistryInfo
 end
-
+# isgit(r::Registry) = r.tree_info == nothing
 Registry(path::AbstractString) = Registry(path, uninit)
 
 function Base.show(io::IO, ::MIME"text/plain", r::Registry)
@@ -147,7 +148,9 @@ function Base.show(io::IO, ::MIME"text/plain", r::Registry)
         println(io, "Registry: $(repr(r.name)) at $(repr(path)):")
         println(io, "  uuid: ", r.uuid)
         println(io, "  repo: ", r.repo)
-        println(io, "  subdir: ", r.repo)
+        if r.tree_info !== nothing
+            println(io, "  git-tree-sha1: ", r.tree_info)
+        end
         println(io, "  packages: ", length(r.pkgs))
     end
 end
@@ -166,6 +169,12 @@ function initialize_registry!(r::Registry)
         pkg = Pkg(pkgpath, name, uuid, uninit)
         pkgs[uuid] = pkg
     end
+    tree_info_file = joinpath(r.path, ".tree_info.toml")
+    tree_info = if isfile(tree_info_file)
+        Base.SHA1(TOML.parsefile(p, tree_info_file)["git-tree-sha1"]::String)
+    else
+        nothing
+    end
     @init! r.info = RegistryInfo(
         d["name"]::String,
         UUID(d["uuid"]::String),
@@ -173,6 +182,7 @@ function initialize_registry!(r::Registry)
         get(d, "repo", nothing)::Union{String, Nothing},
         get(d, "description", nothing)::Union{String, Nothing},
         pkgs,
+        tree_info,
         p,
         Dict{String, UUID}(),
         Dict{String, VersionSpec}(),
