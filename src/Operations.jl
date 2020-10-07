@@ -169,7 +169,7 @@ function load_tree_hash(ctx::Context, pkg::PackageSpec)
     for reg in ctx.env.registries
         reg_pkg = get(reg, pkg.uuid, nothing)
         reg_pkg === nothing && continue
-        version_info = get(reg_pkg.version_info, pkg.version, nothing)
+        version_info = get(reg_pkg.info.version_info, pkg.version, nothing)
         version_info === nothing && continue
         hash′ = version_info.git_tree_sha1
         if hash !== nothing
@@ -422,26 +422,29 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Resolve
             else
                 for reg in ctx.env.registries
                     pkg = reg[uuid]
-
-                    for (v, dd) in pkg.version_info
-                        # Filter yanked and if we are in offline mode also downloaded packages
-                        dd.yanked && continue
+                    vinfos = pkg.info.version_info
+                    # Filter yanked and if we are in offline mode also downloaded packages
+                    versions = collect(keys(vinfos))
+                    filter!(versions) do v
+                        vinfos[v].yanked && return false
                         if Pkg.OFFLINE_MODE[]
                             pkg_spec = PackageSpec(name=pkg.name, uuid=pkg.uuid, version=v, tree_hash=dd.git_tree_sha1)
-                            if !is_package_downloaded(ctx, pkg_spec)
-                                continue
-                            end
+                            return is_package_downloaded(ctx, pkg_spec)
                         end
-
+                        return true
+                    end
+                    Pkg.RegistryHandling.initialize_uncompressed!(pkg, versions)
+                    for v in versions
+                        vinfo = vinfos[v]
                         push!(all_versions_u, v)
                         all_deps_u_v = get_or_make!(all_deps_u, v)
                         all_compat_u_v = get_or_make!(all_compat_u, v)
-                        for (name, other_uuid) in dd.deps
+                        for (name, other_uuid) in vinfo.uncompressed_deps
                             # check conflicts??
                             all_deps_u_v[name] = other_uuid
                             push!(uuids, other_uuid)
                         end
-                        for (name,vs) in dd.compat
+                        for (name,vs) in vinfo.uncompressed_compat
                             # check conflicts??
                             all_compat_u_v[name] = vs
                         end
@@ -474,7 +477,7 @@ function load_urls(ctx::Context, pkgs::Vector{PackageSpec})
         for reg in ctx.env.registries
             reg_pkg = get(reg, pkg.uuid, uuid)
             reg_pkg === nothing && continue
-            repo = reg_pkg.repo
+            repo = reg_pkg.info.repo
             repo === nothing && continue
             push!(urls[uuid], repo)
         end
