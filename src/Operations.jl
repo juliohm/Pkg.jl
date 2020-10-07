@@ -164,7 +164,8 @@ end
 # Registry Loading #
 ####################
 
-function load_tree_hash(ctx::Context, pkg::PackageSpec)
+function load_tree_hash!(ctx::Context, pkg::PackageSpec)
+    tracking_registered_version(pkg) || return pkg
     hash = nothing
     for reg in ctx.env.registries
         reg_pkg = get(reg, pkg.uuid, nothing)
@@ -177,14 +178,8 @@ function load_tree_hash(ctx::Context, pkg::PackageSpec)
         end
         hash = hash′
     end
-    return hash
-end
-
-function load_tree_hashes!(ctx::Context, pkgs::Vector{PackageSpec})
-    for pkg in pkgs
-        tracking_registered_version(pkg) || continue
-        pkg.tree_hash = load_tree_hash(ctx, pkg)
-    end
+    pkg.tree_hash = hash
+    return pkg
 end
 
 #######################################
@@ -345,9 +340,9 @@ function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
             push!(pkgs, PackageSpec(;name=name, uuid=uuid, version=ver))
         end
     end
-    load_tree_hashes!(ctx, pkgs)
     final_deps_map = Dict{UUID, Dict{String, UUID}}()
     for pkg in pkgs
+        load_tree_hash!(ctx, pkg)
         deps = begin
             if pkg.uuid in keys(fixed)
                 deps_fixed = Dict{String, UUID}()
