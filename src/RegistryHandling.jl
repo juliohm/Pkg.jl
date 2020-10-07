@@ -2,13 +2,18 @@ module RegistryHandling
 
 using Base: UUID, SHA1, RefValue
 using TOML
-#using Pkg.Versions: VersionSpec, VersionRange
-using Pkg.Types: VersionSpec, VersionRange
+using Pkg.Versions: VersionSpec, VersionRange
+using Pkg.LazilyInitializedFields
+#using Pkg.Types: VersionSpec, VersionRange, LazilyInitializedFields
+
+# The content of a registry is assumed to be constant during the
+# lifetime of a `Registry`. Create a new `Registry` if you want to have
+# a new view on the current registry.
 
 const JULIA_UUID = UUID("1222c4b2-2114-5bfd-aeef-88e4692bbb3e")
 
 # Info about each version of a package
-mutable struct VersionInfo
+@lazy mutable struct VersionInfo
     git_tree_sha1::Base.SHA1
     yanked::Bool
 
@@ -16,13 +21,13 @@ mutable struct VersionInfo
     # TODO: Collapse the two dictionaries below into a single dictionary,
     # we should only need to know the `Dict{UUID, VersionSpec}` mapping
     # (therebe getting rid of the package names).
-    uncompressed_compat::Union{Dict{String, VersionSpec}, Nothing}
-    uncompressed_deps::Union{Dict{String, UUID}, Nothing}
+    @lazy uncompressed_compat::Union{Dict{String, VersionSpec}}
+    @lazy uncompressed_deps::Union{Dict{String, UUID}}
 end
-VersionInfo(git_tree_sha1::Base.SHA1, yanked::Bool) = VersionInfo(git_tree_sha1, yanked, nothing, nothing)
+VersionInfo(git_tree_sha1::Base.SHA1, yanked::Bool) = VersionInfo(git_tree_sha1, yanked, uninit, uninit)
 
 # Lazily initialized
-mutable struct PkgInfo
+struct PkgInfo
     # Package.toml:
     repo::Union{String, Nothing}
     subdir::Union{String, Nothing}
@@ -35,36 +40,32 @@ mutable struct PkgInfo
 
     # Deps.toml
     deps::Dict{VersionRange, Dict{String, UUID}}
-
-    uncompressed_initialized::Bool
 end
 
-mutable struct Pkg
+@lazy struct Pkg
     # Registry.toml:
     path::String
     name::String
     uuid::UUID
 
     # Version.toml / (Compat.toml / Deps.toml):
-    info::Union{PkgInfo, Nothing}
+    @lazy info::Union{PkgInfo}
 end
 
 # Call this before accessing uncompressed data
-function initialize_uncompressed!(pkg::Pkg)
-    @assert pkg.info !== nothing
-    pkg = pkg.info::PkgInfo
-    pkg.uncompressed_initialized && return pkg
+function initialize_uncompressed!(pkg::Pkg, versions = keys(pkg.info.version_info))
+    pkg = pkg.info
 
-    vsorted = sort!(collect(keys(pkg.version_info)))
-    uncompressed_compat = uncompress(pkg.compat, vsorted)
-    uncompressed_deps   = uncompress(pkg.deps,   vsorted)
-    #=
-    @show keys(uncompressed_compat)
-    @show keys(uncompressed_deps)
-    @show keys(pkg.version_info)
-    =#
-    #@assert keys(uncompressed_compat) == keys(uncompressed_deps) == keys(pkg.version_info)
-    for v in vsorted
+    # Only valid to call this with existing versions of the package
+    # Remove all versions we have already uncompressed
+    versions = filter!(v -> !isinit(pkg.version_info[v], :uncompressed_compat), collect(versions))
+
+    sort!(versions)
+
+    uncompressed_compat = uncompress(pkg.compat, versions)
+    uncompressed_deps   = uncompress(pkg.deps,   versions)
+
+    for v in versions
         vinfo = pkg.version_info[v]
         # TODO: Use when collapsing the two fields in VersionInfo is to be implemented
         #=
@@ -78,18 +79,15 @@ function initialize_uncompressed!(pkg::Pkg)
             d[uuid] = compat
         end
         =#
-        vinfo.uncompressed_compat = get(Dict{String, VersionSpec}, uncompressed_compat, v)
-        vinfo.uncompressed_deps = get(Dict{String, UUID}, uncompressed_deps, v)
+        @init! vinfo.uncompressed_compat = get(Dict{String, VersionSpec}, uncompressed_compat, v)
+        @init! vinfo.uncompressed_deps = get(Dict{String, UUID}, uncompressed_deps, v)
     end
-    pkg.uncompressed_initialized = true
     return pkg
 end
 
 function uncompress(compressed::Dict{VersionRange, Dict{String, T}}, vsorted::Vector{VersionNumber}) where {T}
     @assert issorted(vsorted)
     uncompressed = Dict{VersionNumber, Dict{String, T}}()
-    # Many of the entries are repeated so we keep a cache so there is no need to re-create
-    # a bunch of identical objects
     for (vs, data) in compressed
         first = length(vsorted) + 1
         # We find the first and last version that are in the range
@@ -133,16 +131,15 @@ struct RegistryInfo
     name_to_uuids::Dict{String, Vector{UUID}}
 end
 
-mutable struct Registry
+@lazy struct Registry
     path::String
-    # Lazyily constructed
-    info::Union{RegistryInfo, Nothing}
+    @lazy info::RegistryInfo
 end
 
-Registry(path::AbstractString) = Registry(path, nothing)
+Registry(path::AbstractString) = Registry(path, uninit)
 
 function Base.show(io::IO, ::MIME"text/plain", r::Registry)
-    if r.info === nothing
+    if !@isinit(r.info)
         println(io, "Registry: at $(repr(r.path)) [uninitialized]")
     else
         path = r.path
@@ -156,7 +153,7 @@ function Base.show(io::IO, ::MIME"text/plain", r::Registry)
 end
 
 function initialize_registry!(r::Registry)
-    r.info === nothing || return r
+    @isinit(r.info) && return r
     p = TOML.Parser()
     d = TOML.parsefile(p, joinpath(r.path, "Registry.toml"))
     pkgs = Dict{UUID, Pkg}()
@@ -166,10 +163,10 @@ function initialize_registry!(r::Registry)
         name = info["name"]::String
         name === "julia" && continue
         pkgpath = info["path"]::String
-        pkg = Pkg(pkgpath, name, uuid, nothing)
+        pkg = Pkg(pkgpath, name, uuid, uninit)
         pkgs[uuid] = pkg
     end
-    r.info = RegistryInfo(
+    @init! r.info = RegistryInfo(
         d["name"]::String,
         UUID(d["uuid"]::String),
         get(d, "url", nothing)::Union{String, Nothing},
@@ -187,10 +184,10 @@ end
 function update_package!(r::Registry, u::UUID)
     initialize_registry!(r)
     rpath = r.path
-    r = r.info::RegistryInfo
+    r = r.info
     pkg = r.pkgs[u]
     # Already uncompressed the info for this package, return early
-    pkg.info === nothing || return r
+    @isinit(pkg.info) && return pkg
     path = joinpath(rpath, pkg.path)
 
     path_package = joinpath(path, "Package.toml")
@@ -230,7 +227,7 @@ function update_package!(r::Registry, u::UUID)
         deps[vr] = d
     end
 
-    pkg.info = PkgInfo(repo, subdir, version_info, compat, deps, false)
+    @init! pkg.info = PkgInfo(repo, subdir, version_info, compat, deps)
 
     return pkg
 end
@@ -296,27 +293,35 @@ function Base.keys(r::Registry)
 end
 
 function Base.getindex(r::Registry, uuid::UUID)
-    update!(r, uuid)
+    update_package!(r, uuid)
     return r.info.pkgs[uuid]
 end
 
 function Base.get(r::Registry, uuid::UUID, default)
-    update!(r, uuid)
+    update_package!(r, uuid)
     return get(r.info.pkgs, uuid, default)
 end
 
 # Some stuff useful for timing / debugging
 function update_all!(r::Registry)
-    r.info === nothing && initialize_registry!(r)
+    @isinit(r.info) || initialize_registry!(r)
     foreach(u->update_package!(r, u), keys(r.info.pkgs))
 end
 
 function uncompress_all!(r::Registry)
-    r.info === nothing && initialize_registry!(r)
+    @isinit(r.info) || initialize_registry!(r)
     foreach(initialize_uncompressed!, values(r.info.pkgs))
 end
 
+#=
+function Base.iterate(r::Registry)
+    @isinit(r.info) || initialize_registry!(r)
+    return iterate(r.info.pkgs)
 end
+Base.iterate(r::Registry, state) = iterate(r.info.pkgs, state)
+=#
+
+end # module
 
 #=
 r = RegistryHandling.Registry(joinpath(homedir(), ".julia/registries/General"))

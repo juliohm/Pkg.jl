@@ -34,6 +34,8 @@ const UPDATED_REGISTRY_THIS_SESSION = Ref(false)
 const OFFLINE_MODE = Ref(false)
 const DEFAULT_IO = Ref{Union{Nothing,IO}}(nothing)
 
+include("../ext/LazilyInitializedFields/src/LazilyInitializedFields.jl")
+
 include("utils.jl")
 include("GitTools.jl")
 include("PlatformEngines.jl")
