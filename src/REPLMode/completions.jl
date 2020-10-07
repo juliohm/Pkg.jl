@@ -49,6 +49,7 @@ function complete_local_dir(s, i1, i2)
     return completions, cmp[2], !isempty(completions)
 end
 
+
 function complete_remote_package(partial)
     cmp = String[]
     isempty(partial) && return cmp
@@ -59,25 +60,19 @@ function complete_remote_package(partial)
         Pkg.RegistryHandling.initialize_registry!(reg)
         for (uuid, pkg) in reg.info.pkgs
             if startswith(pkg.name, partial)
-                # TODO: In this case we don't actually need to do the uncompressing
-                # since we just want to see if julia is inside one of the ranges
-                # Tweak the API to allow for that?
-                Pkg.RegistryHandling.update!(reg, uuid)
-                for (v, v_data) in pkg.version_info
-                    # TODO: consolidate this with the version filtering in `Operations.deps_graph`
-                    v_data.yanked && continue
-                    if Pkg.OFFLINE_MODE[]
-                        pkg_spec = PackageSpec(name=pkg.name, uuid=pkg.uuid, tree_hash=v_data.git_tree_sha1)
-                        if !Operations.is_package_downloaded(ctx, pkg_spec)
-                            continue
-                        end
-                    end
+                Pkg.RegistryHandling.update_package!(reg, uuid)
+                versions = keys(pkg.info.version_info)
+                # Filter versions
+                Pkg.RegistryHandling.initialize_uncompressed!(pkg, versions)
+                for v in versions
+                    v_info = pkg.info.version_info[v]
+                    v_info.yanked && continue
                     supported_julia_versions = VersionSpec()
                     found_julia_compat = false
-                    for (pkg, vspec) in v_data.compat
+                    for (pkg, vspec) in v_info.uncompressed_compat
                         if pkg == "julia"
                             found_julia_compat = true
-                            union!(supported_julia_versions, vspec)
+                            supported_julia_versions = intersect(supported_julia_versions, vspec)
                         end
                     end
                     if VERSION in supported_julia_versions || !found_julia_compat
