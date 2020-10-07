@@ -541,10 +541,10 @@ function set_repo_source_from_registry!(ctx, pkg)
     for reg in ctx.env.registries
         regpkg = get(reg, pkg.uuid, nothing)
         regpkg === nothing && continue
-        url = regpkg.repo
+        url = regpkg.info.repo
         url === nothing && continue
         pkg.repo.source = url
-        if regpkg.subdir !== nothing
+        if regpkg.info.subdir !== nothing
             pkg.repo.subdir = regpkg.subdir
         end
         return
